@@ -1,0 +1,137 @@
+name: VPS ETERNA - ZERO ROLLBACK OPTIMIZADA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  vps-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: "1. Preparar Entorno"
+        uses: actions/checkout@v4
+
+      - name: "2. Recuperar Carpeta SRV (Caché)"
+        id: cache-srv
+        uses: actions/cache/restore@v4
+        with:
+          path: SRV
+          key: srv-storage-${{ github.run_id }}
+          restore-keys: |
+            srv-storage-
+
+      - name: "3. Instalación Inicial (Solo si es nuevo)"
+        run: |
+          if [ ! -d "SRV/server" ]; then
+            echo "🆕 Caché vacío. Clonando repositorio..."
+            mkdir -p SRV
+            cd SRV
+            git clone https://github.com/feloxgarcia0-stack/server.git
+            cd server
+            unzip 0.15.10.zip
+            rm 0.15.10.zip
+            echo "✅ Instalación completada."
+          else
+            echo "♻️ Datos cargados del caché. Servidor listo."
+          fi
+
+      - name: "4. Arrancar PocketMine (PRIORIDAD JUGADORES)"
+        run: |
+          cd SRV/server
+          chmod +x bin/php7/bin/php || true
+          chmod +x start.sh || true
+          
+          echo "🚀 Iniciando servidor..."
+          ./start.sh &
+          sleep 5
+
+      - name: "5. Conectar Red (Playit - JUGADORES ONLINE)"
+        run: |
+          docker run -d \
+            --name=playit \
+            --net=host \
+            -e SECRET_KEY=6d0615844adfcc7f2bd89a75d44504c48aaab7c23c0ca4aa1ead3e3ac665a8b7 \
+            ghcr.io/playit-cloud/playit-agent:0.17
+          
+          echo "✅ TÚNEL CONECTADO. EL SERVIDOR YA ESTÁ ABIERTO PARA TODOS."
+
+      - name: "6. Instalar Herramientas de Admin (FTP + SSH + Tailscale)"
+        run: |
+          echo "⏳ Configurando acceso administrativo en segundo plano..."
+          
+          # 1. Asignar contraseña al usuario 'runner'
+          echo "runner:runnerpass" | sudo chpasswd
+          
+          # 2. Forzar SSH a aceptar contraseñas
+          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+          sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+          sudo systemctl restart ssh || true
+          
+          # 3. Instalar Servidor FTP (vsftpd) para MT Manager
+          sudo apt-get update && sudo apt-get install -y vsftpd
+          # Configuramos FTP permitiendo escritura al usuario
+          echo -e "listen=YES\nlisten_ipv6=NO\nanonymous_enable=NO\nlocal_enable=YES\nwrite_enable=YES\nlocal_umask=022\ndirmessage_enable=YES\nuse_localtime=YES\nxferlog_enable=YES\nconnect_from_port_20=YES\nchroot_local_user=NO\nsecure_chroot_dir=/var/run/vsftpd/empty\npam_service_name=vsftpd" | sudo tee /etc/vsftpd.conf
+          sudo systemctl restart vsftpd
+          
+          # 4. TRUCO DE MT MANAGER: Crear acceso directo a SRV en el inicio
+          ln -s $(pwd)/SRV /home/runner/SRV || true
+          
+          # 5. Conectar Tailscale
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=tskey-auth-kCxCNvJST811CNTRL-XTonMx8eTw3YNvyQgS7Vw3vJvFpcVmSG --hostname=Infinix-VPS --ssh
+          
+          tailscale ip -4 > ts_ip.txt
+
+      - name: "7. Ejecución y Datos de Acceso"
+        run: |
+          TS_IP=$(cat ts_ip.txt)
+          echo "--------------------------------------------------------------------"
+          echo "✅ ADMINISTRACIÓN LISTA"
+          echo ""
+          echo "📁 ACCESO MT MANAGER (FTP):"
+          echo "   Host/IP : $TS_IP"
+          echo "   Puerto  : 21 (FTP) o 22 (SFTP)"
+          echo "   Usuario : runner"
+          echo "   Clave   : runnerpass"
+          echo "   *Nota: Apenas entres verás la carpeta 'SRV'. Todo está ahí."
+          echo ""
+          echo "💻 CONSOLA SSH (Termux):"
+          echo "   ssh runner@$TS_IP"
+          echo "--------------------------------------------------------------------"
+          
+          echo "⏳ Servidor activo por 5h 45m..."
+          sleep 20700 
+
+      - name: "8. APAGADO SEGURO"
+        if: always()
+        run: |
+          echo "🛑 TIEMPO CUMPLIDO. INICIANDO APAGADO SEGURO..."
+          # Matamos el servidor para forzar guardado de mundo/inventarios
+          pkill php || true
+          # Detenemos Playit para cortar conexiones
+          docker stop playit || true
+          echo "✅ Servidor detenido. Datos listos para guardar."
+          sleep 5
+
+      - name: "9. Guardar en la Nube (Caché)"
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: SRV
+          key: srv-storage-${{ github.run_id }}
+
+      - name: "10. Lanzar Relevo (Bucle)"
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "💾 Datos guardados en GitHub."
+          echo "🚀 Invocando a la nueva máquina..."
+          # CAMBIA 'main.yml' POR EL NOMBRE DE TU ARCHIVO
+          gh workflow run "main.yml" --ref main
+          echo "Fin de sesión. La nueva máquina arrancará en ~2 minutos."
