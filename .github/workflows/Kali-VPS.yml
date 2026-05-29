@@ -1,0 +1,160 @@
+name: Kali-VPS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  kali-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: "1. Preparar Entorno"
+        uses: actions/checkout@v4
+
+      - name: "2. Recuperar Carpeta SRV (Caché Persistente)"
+        id: cache-srv
+        uses: actions/cache/restore@v4
+        with:
+          path: SRV
+          key: srv-storage-${{ github.run_id }}
+          restore-keys: |
+            srv-storage-
+
+      - name: "3. Crear start.sh y preparar directorios"
+        run: |
+          mkdir -p SRV/apt-cache
+          
+          if [ ! -f "SRV/start.sh" ]; then
+            cat << 'EOF' > SRV/start.sh
+#!/bin/bash
+# Este script se ejecuta DENTRO del contenedor de Kali Linux
+
+LOG="/SRV/install_kali.log"
+echo "=== Iniciando instalación y configuración de Kali ===" > $LOG
+
+# Instalamos las herramientas extensas (headless = sin entorno gráfico, ideal para VPS/Docker)
+# Almacenamos en caché persistente para no descargar los GBs en cada reinicio
+echo "Actualizando repositorios..." >> $LOG
+apt-get update -y >> $LOG 2>&1
+
+echo "Instalando kali-linux-headless (esto tomará un momento la primera vez)..." >> $LOG
+DEBIAN_FRONTEND=noninteractive apt-get install -y kali-linux-headless --no-install-recommends >> $LOG 2>&1
+
+echo "✅ Entorno Kali completamente cargado." >> $LOG
+
+# Agrega debajo tus propios comandos o scripts para ejecutar herramientas:
+# nmap ...
+# python3 ...
+EOF
+            chmod +x SRV/start.sh
+            echo "✅ start.sh creado con auto-instalador de herramientas."
+          else
+            echo "♻️ start.sh cargado desde el caché."
+            chmod +x SRV/start.sh
+          fi
+
+      - name: "4. Instalar Tailscale (Host de Enlace Seguro)"
+        run: |
+          echo "🚀 Instalando Tailscale..."
+          curl -fsSL https://tailscale.com/install.sh | sh
+          
+          # Habilitamos forwarding (útil para herramientas de red de Kali)
+          echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.conf
+          sudo sysctl -p /etc/sysctl.conf
+          
+          # Conectamos Tailscale SIN Exit Node y deshabilitando DNS para evitar conflictos con Docker/Kali
+          sudo tailscale up --authkey=tskey-auth-kj81yXmYdu11CNTRL-mT422M3PiwZJCr1uofDiwZSa8mhNoSny --hostname=kali-vps --accept-dns=false
+          
+          echo "✅ CONECTADO A TAILSCALE - Hostname: kali-vps"
+
+      - name: "5. Desplegar Kali Linux en Docker"
+        run: |
+          echo "🚀 Descargando e iniciando contenedor oficial de Kali Rolling..."
+          # --network host asegura que Kali use la misma red y túnel de Tailscale
+          # Mapeamos /SRV para tus scripts y la caché de apt para máxima velocidad
+          docker run -d --name kali_core --network host \
+            -v $(pwd)/SRV:/SRV \
+            -v $(pwd)/SRV/apt-cache:/var/cache/apt/archives \
+            kalilinux/kali-rolling sleep infinity
+          
+          echo "✅ Contenedor iniciado. Instalando paquetes básicos..."
+          docker exec kali_core bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget nano git iputils-ping"
+
+      - name: "6. Configurar SSH y Acceso Directo a Kali"
+        run: |
+          echo "runner:runnerpass" | sudo chpasswd
+          
+          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+          sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+          sudo systemctl restart ssh
+          
+          TS_IP=$(sudo tailscale ip -4)
+          
+          # Crear un alias para entrar al contenedor fácilmente
+          echo 'alias kali="docker exec -it kali_core /bin/bash"' | sudo tee -a /home/runner/.bashrc
+          
+          cat << EOF | tee ~/conectar.sh
+#!/bin/bash
+echo "📡 IP Tailscale: $TS_IP"
+echo "🔑 Usuario: runner | Contraseña: runnerpass"
+echo "Para entrar a Kali escribe: kali"
+EOF
+          chmod +x ~/conectar.sh
+          echo $TS_IP > tailscale_ip.txt
+
+      - name: "7. Lanzar procesos de usuario (Fondo)"
+        run: |
+          echo "🚀 Ejecutando start.sh dentro de Kali (en segundo plano)..."
+          docker exec kali_core bash /SRV/start.sh &
+          sleep 2
+
+      - name: "8. Ejecución Principal y Datos de Acceso"
+        run: |
+          TS_IP=$(cat tailscale_ip.txt)
+          
+          echo "--------------------------------------------------------------------"
+          echo "🔥 KALI LINUX VPS ACTIVO 🔥"
+          echo ""
+          echo "💻 CONEXIÓN SSH:"
+          echo "   ssh runner@kali-vps"
+          echo "   (Si no resuelve el nombre usa: ssh runner@$TS_IP)"
+          echo "   Contraseña: runnerpass"
+          echo ""
+          echo "⚡ CÓMO USAR KALI:"
+          echo "   1. Entra por SSH al servidor."
+          echo "   2. Escribe el comando:  kali  (Esto te abrirá la terminal root de Kali)."
+          echo "   3. Para ver cómo va la instalación pesada revisa: cat /SRV/install_kali.log"
+          echo ""
+          echo "📂 TUS ARCHIVOS ESTÁN EN /SRV (Dentro de Kali y Ubuntu)"
+          echo "--------------------------------------------------------------------"
+          
+          echo "⏳ Servidor activo por 5h 45m..."
+          sleep 20700
+
+      - name: "9. APAGADO SEGURO Y LOGOUT"
+        if: always()
+        run: |
+          echo "🛑 INICIANDO APAGADO..."
+          sudo tailscale logout
+          sleep 5
+
+      - name: "10. Guardar Caché Persistente (SRV y Paquetes Apt)"
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: SRV
+          key: srv-storage-${{ github.run_id }}
+
+      - name: "11. Bucle de Reinicio Automático"
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🚀 Invocando a la nueva máquina Kali..."
+          gh workflow run "Kali-VPS.yml" --ref main || gh workflow run "VPN.yml" --ref main
+          echo "La nueva máquina arrancará en ~2 minutos."
