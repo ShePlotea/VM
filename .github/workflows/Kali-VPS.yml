@@ -39,7 +39,7 @@ jobs:
             echo 'DEBIAN_FRONTEND=noninteractive apt-get install -y kali-linux-headless --no-install-recommends >> $LOG 2>&1' >> SRV/start.sh
             echo 'echo "✅ Entorno Kali completamente cargado." >> $LOG' >> SRV/start.sh
             chmod +x SRV/start.sh
-            echo "✅ start.sh creado con auto-instalador de herramientas."
+            echo "✅ start.sh creado con auto-instalador."
           else
             echo "♻️ start.sh cargado desde el caché."
             chmod +x SRV/start.sh
@@ -57,11 +57,24 @@ jobs:
           
           echo "✅ CONECTADO A TAILSCALE - Hostname: kali-vps"
 
-      - name: "5. Desplegar Kali Linux (Privilegios, Systemctl y sin choques de APT)"
+      - name: "5. Desplegar Kali Linux (Construcción con SystemD nativo)"
         run: |
-          echo "🚀 Descargando e iniciando contenedor oficial de Kali Rolling con SYSTEMD..."
+          echo "🚀 Preparando imagen base de Kali con soporte REAL para SystemD..."
+          # Se crea la imagen con todo lo necesario para que systemctl funcione
+          cat << 'EOF' > Dockerfile
+          FROM kalilinux/kali-rolling
+          ENV container docker
+          ENV DEBIAN_FRONTEND noninteractive
+          RUN apt-get update && \
+              apt-get install -y dbus systemd systemd-sysv iptables iproute2 kmod curl wget nano git iputils-ping && \
+              apt-get clean
+          VOLUME [ "/sys/fs/cgroup", "/run", "/run/lock", "/tmp" ]
+          CMD ["/lib/systemd/systemd"]
+          EOF
           
-          # Unificamos todas las instalaciones y creamos el archivo /setup_done al terminar
+          docker build -t kali-systemd-core .
+          
+          echo "🚀 Iniciando contenedor con SystemD como proceso principal..."
           docker run -d --name kali_core --network host \
             --privileged \
             --cap-add=ALL \
@@ -70,17 +83,11 @@ jobs:
             -v /lib/modules:/lib/modules:ro \
             -v $(pwd)/SRV:/SRV \
             -v $(pwd)/SRV/apt-cache:/var/cache/apt/archives \
-            kalilinux/kali-rolling \
-            /bin/bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y dbus systemd systemd-sysv iptables iproute2 kmod curl wget nano git iputils-ping && touch /setup_done && exec /lib/systemd/systemd"
+            kali-systemd-core
           
-          echo "⏳ Esperando a que el contenedor configure todo (Systemd, dependencias)..."
-          # Bucle que pausa el workflow hasta que aparezca el archivo /setup_done
-          while ! docker exec kali_core test -f /setup_done; do
-            sleep 5
-            echo "Aún instalando... esperando 5s..."
-          done
-          
-          echo "✅ Contenedor iniciado y Systemd funcionando perfectamente. APT está libre."
+          echo "⏳ Esperando 5 segundos a que SystemD arranque internamente..."
+          sleep 5
+          echo "✅ Contenedor robusto en ejecución."
 
       - name: "6. Configurar SSH y Acceso Directo a Kali"
         run: |
@@ -107,7 +114,6 @@ jobs:
       - name: "7. Lanzar procesos de usuario (Fondo)"
         run: |
           echo "🚀 Ejecutando start.sh dentro de Kali (en segundo plano)..."
-          # Como validamos en el paso 5 que todo terminó, el apt-get de aquí correrá sin errores.
           docker exec kali_core bash /SRV/start.sh &
           sleep 2
 
@@ -127,8 +133,6 @@ jobs:
           echo "   1. Entra por SSH al servidor."
           echo "   2. Escribe el comando:  kali  (Esto te abrirá la terminal root de Kali)."
           echo "   3. Para ver cómo va la instalación pesada revisa: cat /SRV/install_kali.log"
-          echo ""
-          echo "📂 TUS ARCHIVOS ESTÁN EN /SRV (Dentro de Kali y Ubuntu)"
           echo "--------------------------------------------------------------------"
           
           echo "⏳ Servidor activo por 5h 45m..."
