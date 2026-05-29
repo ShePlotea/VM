@@ -57,11 +57,11 @@ jobs:
           
           echo "✅ CONECTADO A TAILSCALE - Hostname: kali-vps"
 
-      - name: "5. Desplegar Kali Linux en Docker (Privilegios Máximos + Systemctl)"
+      - name: "5. Desplegar Kali Linux (Privilegios, Systemctl y sin choques de APT)"
         run: |
           echo "🚀 Descargando e iniciando contenedor oficial de Kali Rolling con SYSTEMD..."
           
-          # Despliegue con todos los privilegios, cgroups y acceso a red/tuneles
+          # Unificamos todas las instalaciones y creamos el archivo /setup_done al terminar
           docker run -d --name kali_core --network host \
             --privileged \
             --cap-add=ALL \
@@ -71,13 +71,16 @@ jobs:
             -v $(pwd)/SRV:/SRV \
             -v $(pwd)/SRV/apt-cache:/var/cache/apt/archives \
             kalilinux/kali-rolling \
-            /bin/bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y dbus systemd systemd-sysv iptables iproute2 kmod && exec /lib/systemd/systemd"
+            /bin/bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y dbus systemd systemd-sysv iptables iproute2 kmod curl wget nano git iputils-ping && touch /setup_done && exec /lib/systemd/systemd"
           
-          echo "⏳ Esperando 5 segundos a que systemd arranque internamente..."
-          sleep 5
+          echo "⏳ Esperando a que el contenedor configure todo (Systemd, dependencias)..."
+          # Bucle que pausa el workflow hasta que aparezca el archivo /setup_done
+          while ! docker exec kali_core test -f /setup_done; do
+            sleep 5
+            echo "Aún instalando... esperando 5s..."
+          done
           
-          echo "✅ Contenedor iniciado. Instalando paquetes básicos..."
-          docker exec kali_core bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget nano git iputils-ping"
+          echo "✅ Contenedor iniciado y Systemd funcionando perfectamente. APT está libre."
 
       - name: "6. Configurar SSH y Acceso Directo a Kali"
         run: |
@@ -104,6 +107,7 @@ jobs:
       - name: "7. Lanzar procesos de usuario (Fondo)"
         run: |
           echo "🚀 Ejecutando start.sh dentro de Kali (en segundo plano)..."
+          # Como validamos en el paso 5 que todo terminó, el apt-get de aquí correrá sin errores.
           docker exec kali_core bash /SRV/start.sh &
           sleep 2
 
