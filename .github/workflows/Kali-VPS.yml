@@ -78,8 +78,12 @@ jobs:
           
           TS_IP=$(sudo tailscale ip -4)
           
-          echo 'alias kali="docker exec -it kali_core /bin/bash"' | sudo tee -a /home/runner/.bashrc
+          # Crear ejecutable global 'kali' en una ruta 100% segura del sistema
+          echo '#!/bin/bash' | sudo tee /usr/bin/kali
+          echo 'sudo docker exec -it kali_core /bin/bash' | sudo tee -a /usr/bin/kali
+          sudo chmod +x /usr/bin/kali
           
+          # Script recordatorio de credenciales
           echo '#!/bin/bash' > ~/conectar.sh
           echo "echo '📡 IP Tailscale: $TS_IP'" >> ~/conectar.sh
           echo "echo '🔑 Usuario: runner | Contraseña: runnerpass'" >> ~/conectar.sh
